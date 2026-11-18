@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Servicios ecosistémicos - Distribución Likert</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+*{box-sizing:border-box} body{font-family:"Segoe UI",Arial,sans-serif;margin:0;padding:12px;background:#fff;color:#333}
+.contenedor{width:100%;max-width:1200px;margin:auto}.encabezado{margin:0 0 16px}
+h2{font-size:21px;font-weight:600;margin:0 0 5px}.subtitulo{color:#777;font-size:13px;margin:0}
+#graficas{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,360px),1fr));gap:18px}
+.grafica-tarjeta{border:1px solid #e5e5e5;border-radius:8px;padding:12px;min-width:0;background:#fff}
+.grafica-titulo{font-size:16px;font-weight:600;margin:0 0 8px;color:#333}
+.grafica-contenedor{position:relative;width:100%;height:290px}
+.mensaje{margin:12px 0;font-size:13px;color:#777}.error{color:#b00020}
+@media(max-width:600px){body{padding:9px}h2{font-size:18px}#graficas{grid-template-columns:1fr}.grafica-contenedor{height:260px}}
+</style>
+</head>
+<body>
+<div class="contenedor">
+  <header class="encabezado">
+  </header>
+  <main id="graficas"></main>
+</div>
+<script>
+// Capa alojada en ArcGIS Online
+const URL_CAPA = "https://services5.arcgis.com/85aFYYEQ9koK4ueu/arcgis/rest/services/ServiciosEcosistemicosUNICOR_2/FeatureServer/0/query";
+
+// Los colores se asignan de forma estable a cada servicio.
+const PALETAS_CATEGORIA = {
+  "Servicios de regulación": ["#eff3ff","#bdd7e7","#6baed6","#3182bd","#08519c"],
+  "Servicios culturales": ["#FFFFD4","#FFFF73","#ECCA00","#EFB000","#A87E00"],
+  "Servicios de provisión": ["#feedde","#fdbe85","#fd8d3c","#e6550d","#a63603"],
+  "Servicios de soporte": ["#edf8e9","#bae4b3","#74c476","#31a354","#006d2c"],
+  "Servicios Ecosistémicos Generales": ["#e6d2f0","#d2a0d8","#a06bc3","#7b3fb3","#4a1486"]
+};
+const PALETAS_ADICIONALES = [
+  ["#FDE0DD","#FCC5C0","#FA9FB5","#F768A1","#C51B8A"],
+  ["#FFFFCC","#C2E699","#78C679","#31A354","#006837"],
+  ["#E0F3F8","#ABD9E9","#74ADD1","#4575B4","#313695"],
+  ["#F2F0F7","#CBC9E2","#9E9AC8","#756BB1","#4A1486"]
+];
+let registros = [];
+let instanciasGraficas = [];
+
+function parametro(...nombres){
+  const q = new URLSearchParams(window.location.search);
+  for (const n of nombres){
+    const v = q.get(n);
+    if (v && !v.includes("{") && !v.includes("}")) return v.trim();
+  }
+  return "";
+}
+const filtros = {
+  sede: parametro("sede","SEDE"),
+  categoria: parametro("categoria","CATEGORIA","categoría"),
+  servicio: parametro("servicio","SERVICIO")
+};
+function normalizar(v){return String(v ?? "").trim().toLocaleLowerCase("es-CO");}
+function obtenerPaleta(servicio,categoria){
+  if (PALETAS_CATEGORIA[categoria]) return PALETAS_CATEGORIA[categoria];
+  let hash=0; for(let i=0;i<servicio.length;i++){hash=((hash<<5)-hash)+servicio.charCodeAt(i);hash|=0;}
+  return PALETAS_ADICIONALES[Math.abs(hash)%PALETAS_ADICIONALES.length];
+}
+async function consultarDatos(){
+  const mensaje=document.getElementById("mensaje");
+  try{
+    registros=[]; let offset=0; const bloque=1000; let continuar=true;
+    while(continuar){
+      const params=new URLSearchParams({
+        where:"1=1", outFields:"SEDE,CATEGORIA,SERVICIO,VALOR", returnGeometry:"false",
+        resultRecordCount:String(bloque), resultOffset:String(offset), orderByFields:"OBJECTID ASC", f:"json"
+      });
+      const resp=await fetch(URL_CAPA+"?"+params.toString());
+      if(!resp.ok) throw new Error("No fue posible consultar ArcGIS (HTTP "+resp.status+").");
+      const json=await resp.json(); if(json.error) throw new Error(json.error.message||"Error de ArcGIS");
+      const fs=json.features||[]; registros.push(...fs.map(f=>f.attributes));
+      continuar=fs.length===bloque; offset+=fs.length;
+    }
+    dibujarGraficas();
+  }catch(e){mensaje.textContent="Error al consultar la capa: "+e.message;mensaje.classList.add("error");console.error(e);}
+}
+function dibujarGraficas(){
+  const zona=document.getElementById("graficas"), mensaje=document.getElementById("mensaje");
+  instanciasGraficas.forEach(c=>c.destroy()); instanciasGraficas=[]; zona.innerHTML="";
+  let filtrados=registros.filter(r=>{
+    if(filtros.sede && normalizar(r.SEDE)!==normalizar(filtros.sede)) return false;
+    if(filtros.categoria && normalizar(r.CATEGORIA)!==normalizar(filtros.categoria)) return false;
+    if(filtros.servicio && normalizar(r.SERVICIO)!==normalizar(filtros.servicio)) return false;
+    return true;
+  });
+  const servicios=[...new Set(filtrados.map(r=>String(r.SERVICIO??"").trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b,"es"));
+  if(!servicios.length){
+    mensaje.textContent="No hay registros para los filtros recibidos. Verifica la sede, categoría o servicio seleccionados en el Dashboard.";
+    return;
+  }
+  servicios.forEach((servicio,i)=>{
+    const muestra=filtrados.filter(r=>normalizar(r.SERVICIO)===normalizar(servicio));
+    const frecuencias=[0,0,0,0,0];
+    muestra.forEach(r=>{const v=Number(r.VALOR);if(Number.isInteger(v)&&v>=1&&v<=5)frecuencias[v-1]++;});
+    const tarjeta=document.createElement("section"); tarjeta.className="grafica-tarjeta";
+    const titulo=document.createElement("h3"); titulo.className="grafica-titulo"; titulo.textContent=servicio;
+    const cont=document.createElement("div"); cont.className="grafica-contenedor";
+    const canvas=document.createElement("canvas"); canvas.setAttribute("aria-label","Distribución Likert de "+servicio);
+    cont.appendChild(canvas); tarjeta.append(titulo,cont); zona.appendChild(tarjeta);
+    const paleta=obtenerPaleta(servicio,muestra[0]?.CATEGORIA||filtros.categoria);
+    const chart=new Chart(canvas.getContext("2d"),{
+      type:"bar",data:{labels:["1","2","3","4","5"],datasets:[{label:"Número de polígonos",data:frecuencias,backgroundColor:paleta,borderColor:paleta,borderWidth:1,borderRadius:5,barPercentage:.65,categoryPercentage:.8}]},
+      options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},title:{display:false},tooltip:{callbacks:{label:c=>"Número de polígonos: "+c.parsed.y}}},scales:{x:{title:{display:true,text:"Calificación (1–5)"}},y:{beginAtZero:true,ticks:{precision:0},title:{display:true,text:"Número de polígonos"}}}}
+    });
+    instanciasGraficas.push(chart);
+  });
+}
+consultarDatos();
+</script>
+</body>
+</html>
